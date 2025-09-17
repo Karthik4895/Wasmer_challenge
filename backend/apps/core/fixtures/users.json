@@ -1,0 +1,19 @@
+[
+    {
+      "model": "core.user",
+      "pk": 1,
+      "fields": {
+        "username": "Karthik",
+        "plan": "H"
+      }
+    },
+    {
+      "model": "core.user",
+      "pk": 2,
+      "fields": {
+        "username": "Jayaraman",
+        "plan": "P"
+      }
+    }
+  ]
+  

@@ -1,0 +1,19 @@
+[
+    {
+      "model": "core.deployedapp",
+      "pk": 1,
+      "fields": {
+        "owner": 1,
+        "active": true
+      }
+    },
+    {
+      "model": "core.deployedapp",
+      "pk": 2,
+      "fields": {
+        "owner": 2,
+        "active": false
+      }
+    }
+  ]
+  
