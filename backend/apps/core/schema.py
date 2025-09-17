@@ -1,98 +1,152 @@
-import graphene
-from graphene import relay
-from graphene_django import DjangoObjectType
-from graphql import GraphQLError
-
+import strawberry
+from typing import List, Optional, Union
 from .models import User, DeployedApp
-from .dataloaders import get_dataloaders
 
 
-TYPE_PREFIXES = {
-    "UserType": "u",
-    "AppType": "app"
-}
+@strawberry.type
+class AppType:
+    id: strawberry.ID
+    active: bool
 
-class CustomNode(relay.Node):
-    class Meta:
-        name = "Node"
 
-    @staticmethod
-    def to_global_id(type_, id):
-        prefix = TYPE_PREFIXES.get(type_)
-        if not prefix:
-            raise ValueError(f"Unknown type: {type_}")
-        return f"{prefix}_{id}"
+@strawberry.type
+class UserType:
+    id: strawberry.ID
+    username: str
+    plan: str
+    apps: List[AppType]
 
-    @staticmethod
-    def get_node_from_global_id(info, global_id, only_type=None):
+
+Node = strawberry.union("Node", (UserType, AppType))
+
+
+@strawberry.type
+class Query:
+    @strawberry.field
+    async def user(self, id: strawberry.ID) -> Optional[UserType]:
+        """Fetch a single user by ID (u_1, u_2, etc.)"""
+        pk = str(id).replace("u_", "")
         try:
-            if global_id.startswith("u_"):
-                pk = global_id.split("_", 1)[1]
-                return User.objects.get(pk=pk)
-            elif global_id.startswith("app_"):
-                pk = global_id.split("_", 1)[1]
-                return DeployedApp.objects.get(pk=pk)
+            user = await User.objects.aget(pk=pk)
         except User.DoesNotExist:
-            raise GraphQLError("User not found.")
+            return None
+
+        apps = [
+            AppType(id=f"app_{app.pk}", active=app.active)
+            async for app in DeployedApp.objects.filter(owner=user)
+        ]
+
+        return UserType(
+            id=f"u_{user.pk}",
+            username=user.username,
+            plan=user.plan,
+            apps=apps,
+        )
+
+    @strawberry.field
+    async def app(self, id: strawberry.ID) -> Optional[AppType]:
+        pk = str(id).replace("app_", "")
+        try:
+            app = await DeployedApp.objects.aget(pk=pk)
         except DeployedApp.DoesNotExist:
-            raise GraphQLError("App not found.")
+            return None
+
+        return AppType(id=f"app_{app.pk}", active=app.active)
+
+    @strawberry.field
+    async def node(self, id: strawberry.ID) -> Optional[Node]:
+        if str(id).startswith("u_"):
+            pk = str(id).replace("u_", "")
+            try:
+                user = await User.objects.aget(pk=pk)
+            except User.DoesNotExist:
+                return None
+
+            apps = [
+                AppType(id=f"app_{app.pk}", active=app.active)
+                async for app in DeployedApp.objects.filter(owner=user)
+            ]
+
+            return UserType(
+                id=f"u_{user.pk}",
+                username=user.username,
+                plan=user.plan,
+                apps=apps,
+            )
+
+        elif str(id).startswith("app_"):
+            pk = str(id).replace("app_", "")
+            try:
+                app = await DeployedApp.objects.aget(pk=pk)
+            except DeployedApp.DoesNotExist:
+                return None
+
+            return AppType(id=f"app_{app.pk}", active=app.active)
+
         return None
 
-class UserType(DjangoObjectType):
-    class Meta:
-        model = User
-        interfaces = (CustomNode,)
-        fields = ("username", "plan")
 
-    async def resolve_apps(self, info):
-        return await info.context["loaders"]["apps_by_user"].load(self.id)
-
-class AppType(DjangoObjectType):
-    class Meta:
-        model = DeployedApp
-        interfaces = (CustomNode,)
-        fields = ("active",)
-
-    async def resolve_owner(self, info):
-        return await info.context["loaders"]["user_loader"].load(self.owner_id)
+@strawberry.type
+class UpgradeAccountPayload:
+    user: UserType
 
 
-class PlanMutationMixin:
-    plan_value = None 
+@strawberry.type
+class DowngradeAccountPayload:
+    user: UserType
 
-    @classmethod
-    async def mutate(cls, root, info, user_id):
+
+@strawberry.type
+class Mutation:
+    @strawberry.mutation
+    async def upgrade_account(self, user_id: strawberry.ID) -> Optional[UpgradeAccountPayload]:
+        pk = str(user_id).replace("u_", "")
         try:
-            user_pk = user_id.split("_", 1)[1]
-            user = await User.objects.aget(pk=user_pk)
+            user = await User.objects.aget(pk=pk)
         except User.DoesNotExist:
-            raise GraphQLError("User not found.")
+            return None
 
-        user.plan = cls.plan_value
+        user.plan = User.PRO
         await user.asave()
-        return cls(user=user)
+
+        apps = [
+            AppType(id=f"app_{app.pk}", active=app.active)
+            async for app in DeployedApp.objects.filter(owner=user)
+        ]
+
+        return UpgradeAccountPayload(
+            user=UserType(
+                id=f"u_{user.pk}",
+                username=user.username,
+                plan=user.plan,
+                apps=apps,
+            )
+        )
+
+    @strawberry.mutation
+    async def downgrade_account(self, user_id: strawberry.ID) -> Optional[DowngradeAccountPayload]:
+        pk = str(user_id).replace("u_", "")
+        try:
+            user = await User.objects.aget(pk=pk)
+        except User.DoesNotExist:
+            return None
+
+        user.plan = User.HOBBY
+        await user.asave()
+
+        apps = [
+            AppType(id=f"app_{app.pk}", active=app.active)
+            async for app in DeployedApp.objects.filter(owner=user)
+        ]
+
+        return DowngradeAccountPayload(
+            user=UserType(
+                id=f"u_{user.pk}",
+                username=user.username,
+                plan=user.plan,
+                apps=apps,
+            )
+        )
 
 
-class UpgradeAccount(PlanMutationMixin, graphene.Mutation):
-    class Arguments:
-        user_id = graphene.ID(required=True)
-
-    user = graphene.Field(UserType)
-    plan_value = 'P'
-
-class DowngradeAccount(PlanMutationMixin, graphene.Mutation):
-    class Arguments:
-        user_id = graphene.ID(required=True)
-
-    user = graphene.Field(UserType)
-    plan_value = 'H'
-
-
-class Query(graphene.ObjectType):
-    node = CustomNode.Field()
-
-class Mutation(graphene.ObjectType):
-    upgrade_account = UpgradeAccount.Field()
-    downgrade_account = DowngradeAccount.Field()
-
-schema = graphene.Schema(query=Query, mutation=Mutation, types=[UserType, AppType])
+schema = strawberry.Schema(query=Query, mutation=Mutation, types=[UserType, AppType])
